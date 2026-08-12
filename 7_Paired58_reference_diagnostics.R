@@ -24,9 +24,8 @@
 #   separately using Fisher's exact test.
 # - Parent-protein adjustment supports phosphosite-specific regulation but
 #   does not establish direct phosphorylation by CDK1.
-# - Protein-relative phosphosite positions are not available in the supplied
-#   feature table. Modified.Sequence and Assigned.Modifications are retained
-#   without inferring residue numbers.
+# - VIM pSer55 and HNRNPU pSer247 are curated site labels reported by the NanoSPLITS study; they are not newly inferred here.
+# - No protein-relative residue positions are inferred for other phosphopeptides.
 #
 # Run scripts 0-6 before this script.
 #
@@ -805,7 +804,7 @@ module_null <- bind_rows(module_null_rows)
 write_csv(module_scores, file.path(geometry_dir, "paired58_rna_protein_module_scores.csv"))
 
 # Correct empirical module-level P values across all tested modules.
-module_concordance <- module_concordance %>% 
+module_correlations <- module_correlations %>%
   mutate(EmpiricalFDR = p.adjust(EmpiricalP, method = "BH"), PrespecifiedG2MBenchmark = Pathway == "HALLMARK_G2M_CHECKPOINT",
          EvidenceCategory = case_when(EmpiricalFDR < 0.05 ~ "FDR_significant",
                                       PrespecifiedG2MBenchmark & EmpiricalP < 0.05 ~ "Prespecified_G2M_nominal",
@@ -820,8 +819,9 @@ if (nrow(module_correlations) > 0) {
                                               PathwayLabel = fct_reorder(PathwayLabel, Observed)) %>%
     ggplot(aes(x = Observed, y = PathwayLabel)) + geom_vline(xintercept = 0, colour = "grey65", linetype = 2) +
     geom_errorbarh(aes(xmin = NullQ025, xmax = NullQ975), height = 0.16, colour = "grey45") +
-    geom_point(aes(colour = EmpiricalP <= 0.05), size = 2.5) +
-    scale_colour_manual(values = c(`TRUE` = "#D55E00", `FALSE` = "grey35"), guide = "none") +
+    geom_point(aes(colour = EvidenceCategory), size = 2.5) +
+    scale_colour_manual(values = c(FDR_significant = "#0072B2", Prespecified_G2M_nominal = "#D55E00", Not_supported = "grey35"),
+                        name = NULL) +
     labs(x = "Condition/block-residual RNA-protein Spearman rho\n(line = stratified-null 95% interval)", y = NULL)
 
   save_svg(geometry_dir, "paired58_module_concordance_vs_null.svg", p_modules, 8.0, 5.4)
@@ -1008,23 +1008,23 @@ target_site_annotations <- tribble(~PeptideRowID, ~CanonicalUniProtAccession, ~C
                                    "Matched_to_NanoSPLITS_reported_site", "PEP_000999", "Q8VEK3", "HNRPU_MOUSE", "pSer247",
                                    "Matched_to_NanoSPLITS_reported_site")
 
-targeted_vim_hnrnpu <- targeted_vim_hnrnpu %>% left_join(target_site_annotations, by = "PeptideRowID")
+targeted_phosphoprotein_lookup <- targeted_phosphoprotein_lookup %>% left_join(target_site_annotations, by = "PeptideRowID")
 
-# Ensure that both targeted phosphopeptides were found.
+# Ensure that both curated target peptides were recovered.
 expected_target_peptides <- c("PEP_023136", "PEP_000999")
 
-if (!all(expected_target_peptides %in% targeted_vim_hnrnpu$PeptideRowID)) {
-  stop("One or more curated VIM/HNRNPU phosphopeptides were not found.")
+if (!all(expected_target_peptides %in% targeted_phosphoprotein_lookup$PeptideRowID)) {
+  missing_target_peptides <- setdiff(expected_target_peptides, targeted_phosphoprotein_lookup$PeptideRowID)
+  
+  stop("Curated VIM/HNRNPU phosphopeptide(s) not found: ", paste(missing_target_peptides, collapse = ", "))
 }
 
-write_csv(targeted_vim_hnrnpu, file.path(output_dir, "targeted_Vim_Hnrnpu_phosphopeptide_lookup.csv"))
 write_csv(targeted_phosphoprotein_lookup, file.path(phospho_output_dir, "targeted_Vim_Hnrnpu_phosphopeptide_lookup.csv"), na = "")
 
 
 phosphopeptide_plot_data <- phosphopeptide_tests %>% filter(IntensityTestEligible, is.finite(AdjustedConditionEffect)) %>%
   mutate(PlotFDR = pmax(AdjustedConditionFDR, .Machine$double.xmin),
-         Label = if_else(ParentAdjustedPriority | min_rank(AdjustedConditionFDR) <= 8, paste0(Gene, " | ", PeptideRowID),
-                         NA_character_))
+         Label = if_else(ParentAdjustedPriority | min_rank(AdjustedConditionFDR) <= 8, paste0(Gene, " | ", PeptideRowID), NA_character_))
 
 if (nrow(phosphopeptide_plot_data) > 0) {
   p_phosphopeptide <- ggplot(phosphopeptide_plot_data, aes(x = AdjustedConditionEffect, y = -log10(PlotFDR))) +
@@ -1130,7 +1130,7 @@ analysis_notes <- c("This script does not retrain or modify the native MOFA+ mod
                     "Phosphopeptide intensity models are conditional on observed phosphopeptide and parent-protein values.",
                     "Detection differences are tested separately and should be interpreted together with conditional intensity effects.",
                     "Parent-protein-adjusted association does not establish direct CDK1 phosphorylation.",
-                    "No protein-relative phosphosite positions are inferred from peptide-relative Assigned.Modifications.")
+                    "VIM pSer55 and HNRNPU pSer247 are curated NanoSPLITS-reported site labels; no other protein-relative positions are inferred.")
 
 write_lines(analysis_notes, file.path(reference_dir, "paired58_reference_analysis_notes.txt"))
 write_lines(capture.output(sessionInfo()), file.path(reference_dir, "paired58_reference_sessionInfo.txt"))
@@ -1184,7 +1184,7 @@ paired_reference_benchmark_manifest <- tribble(~BenchmarkID, ~Priority, ~Cohort,
                                                "Factor3_technical", "Negative_control", "Paired58_all", "Native Factor 3",
                                                "Assess correlation with RNA detection metrics in the aligned model.",
                                                "Do not interpret recovery of Factor 3 as biological success.")
-write_csv(paired_reference_benchmark_manifest, file.path(output_dir, "paired_reference_benchmark_manifest.csv"))
+write_csv(paired_reference_benchmark_manifest, file.path(reference_dir, "paired_reference_benchmark_manifest.csv"))
 cat("\nPaired-reference diagnostics complete.\n\n")
 cat("Primary reference directory:\n  ", reference_dir, "\n\n", sep = "")
 cat("Key outputs:\n")
